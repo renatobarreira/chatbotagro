@@ -5,183 +5,178 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
+from groq import Groq
 import os
-#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
-# Configuração da Página
-st.set_page_config(page_title="AgroBot - Previsão de Safra", page_icon="🌾", layout="centered")
+import json
 
-# --- FUNÇÃO 1: Carregar Modelo e Recriar Preprocessador ---
+# --- CONFIGURAÇÃO INICIAL ---
+st.set_page_config(page_title="AgroBot AI", page_icon="🤖")
+
+# --- 1. CARREGAMENTO DA REDE NEURAL (Igual ao anterior) ---
 @st.cache_resource
-def load_assets():
-    # 1. Verificação de Segurança
-    required_files = ['modelo_paddy.h5', 'paddydataset.csv']
-    missing = [f for f in required_files if not os.path.exists(f)]
-    
-    if missing:
-        st.error(f"❌ ARQUIVOS FALTANDO NO GITHUB: {missing}")
-        return None, None, None
-
+def load_resources():
     try:
-        # 2. Carregar Dataset
-        df_raw = pd.read_csv('paddydataset.csv')
+        df = pd.read_csv('paddydataset.csv')
+        df.columns = df.columns.str.strip() # Limpeza
         
-        # ⚠️ CORREÇÃO IMPORTANTE: Remove espaços em branco dos nomes das colunas
-        # Ex: "Hectares " vira "Hectares"
-        df_raw.columns = df_raw.columns.str.strip()
-
-        # 3. Carregar Rede Neural
-        model = load_model('modelo_paddy.h5')
-
-        # 4. Recriar o Preprocessador (Fit)
-        X = df_raw.drop('Paddy yield(in Kg)', axis=1)
+        # Recriar preprocessador
+        X = df.drop('Paddy yield(in Kg)', axis=1)
+        cat_cols = X.select_dtypes(include=['object']).columns
+        num_cols = X.select_dtypes(include=['int64', 'float64']).columns
         
-        categorical_cols = X.select_dtypes(include=['object']).columns
-        numerical_cols = X.select_dtypes(include=['int64', 'float64']).columns
-
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ('num', StandardScaler(), numerical_cols),
-                ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_cols)
-            ])
-        
+        preprocessor = ColumnTransformer([
+            ('num', StandardScaler(), num_cols),
+            ('cat', OneHotEncoder(handle_unknown='ignore'), cat_cols)
+        ])
         preprocessor.fit(X)
-
-        return model, preprocessor, df_raw
-
-    except Exception as e:
-        st.error(f"❌ Erro crítico ao processar: {e}")
-        return None, None, None
-
-# Carrega tudo
-model, preprocessor, df_raw = load_assets()
-
-# --- INTERFACE ---
-if df_raw is not None and model is not None:
-    
-    col_logo, col_title = st.columns([1, 4])
-    with col_logo:
-        st.image("https://cdn-icons-png.flaticon.com/512/4205/4205906.png", width=80)
-    with col_title:
-        st.title("AgroBot Inteligente")
-        st.caption("Sistema de previsão de colheita.")
-
-    st.markdown("---")
-    st.info("💡 **Dica:** Os limites dos campos numéricos são baseados no histórico da nossa base de dados para garantir uma previsão mais realista.")
-
-    # Função Auxiliar: Preencher com Médias
-    def get_default_input(df):
+        
+        model = load_model('modelo_paddy.h5')
+        
+        # Pega as listas de opções para ensinar a LLM
+        valid_soils = df['Soil Types'].unique().tolist()
+        valid_varieties = df['Variety'].unique().tolist()
+        
+        # Médias para fallback
         defaults = {}
-        input_cols = df.drop('Paddy yield(in Kg)', axis=1)
-        for col in input_cols.columns:
-            if input_cols[col].dtype == 'object':
-                defaults[col] = input_cols[col].mode()[0]
-            else:
-                defaults[col] = input_cols[col].mean()
-        return pd.DataFrame([defaults])
-
-    # --- FORMULÁRIO COM LIMITES DINÂMICOS ---
-    with st.form("prediction_form"):
-        st.subheader("📝 Dados da Plantação")
-        
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            # --- HECTARES ---
-            # Pega o min e max real do banco de dados
-            min_h = int(df_raw['Hectares'].min())
-            max_h = int(df_raw['Hectares'].max())
-            mean_h = int(df_raw['Hectares'].mean())
+        for col in X.columns:
+            if col in cat_cols: defaults[col] = X[col].mode()[0]
+            else: defaults[col] = X[col].mean()
             
-            hectares = st.number_input(
-                f"Tamanho da Área (Min: {min_h}, Max: {max_h})",
-                min_value=min_h,
-                max_value=max_h,
-                value=mean_h, # Valor inicial é a média
-                step=1
-            )
+        return model, preprocessor, df, valid_soils, valid_varieties, defaults
+    except Exception as e:
+        st.error(f"Erro ao carregar arquivos: {e}")
+        return None, None, None, [], [], {}
+
+model, preprocessor, df_raw, soils_list, varieties_list, global_defaults = load_resources()
+
+# --- 2. CONFIGURAÇÃO DA SESSÃO (MEMÓRIA DO CHAT) ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+    # Estado inicial: saudação do bot
+    st.session_state.messages.append({"role": "assistant", "content": "Olá! Sou o AgroBot. Vou usar minha Rede Neural para prever sua safra. Para começar, me diga: qual o **tamanho da sua área** (em hectares) e qual o **tipo de solo**?"})
+
+# Variáveis que precisamos extrair (Slot Filling)
+if "extracted_data" not in st.session_state:
+    st.session_state.extracted_data = {
+        "Hectares": None,
+        "Soil Types": None,
+        "Variety": None,
+        "Seedrate(in Kg)": None,
+        "DAP_20days": None,
+        "Urea_40Days": None
+    }
+
+# --- 3. CONFIGURAÇÃO DA LLM (CÉREBRO CONVERSACIONAL) ---
+# ⚠️ COLOQUE SUA API KEY AQUI OU NOS SECRETS DO STREAMLIT
+# Se for rodar local, troque pelo string direto: api_key = "gsk_..."
+api_key = st.secrets["GROQ_API_KEY"] if "GROQ_API_KEY" in st.secrets else "SUA_CHAVE_GROQ_AQUI_SE_RODAR_LOCAL"
+
+try:
+    client = Groq(api_key=api_key)
+except:
+    st.warning("⚠️ API Key da Groq não configurada. O chat não funcionará.")
+    client = None
+
+def get_llm_response(user_input, current_data):
+    """
+    Esta função manda o que o usuário disse + o que já sabemos para a LLM.
+    A LLM deve retornar um JSON com os dados atualizados e uma resposta em texto.
+    """
+    
+    system_prompt = f"""
+    Você é um assistente agrícola especialista. Seu objetivo é coletar dados para alimentar uma Rede Neural.
+    
+    DADOS QUE PRECISAMOS COLETAR (Se for None, pergunte ao usuário):
+    1. Hectares (Número inteiro)
+    2. Soil Types (Deve ser um destes: {soils_list})
+    3. Variety (Deve ser um destes: {varieties_list})
+    4. Seedrate(in Kg) (Número, opcional, se não informado assuma a média)
+    5. DAP_20days (Número, opcional, fertilizante)
+    6. Urea_40Days (Número, opcional, fertilizante)
+
+    O QUE VOCÊ DEVE FAZER:
+    Analise a entrada do usuário e o estado atual. Atualize os campos.
+    Se faltar informação crítica (Hectares, Soil Types, Variety), pergunte de forma natural e simpática.
+    Se o usuário der uma informação aproximada (ex: "solo de barro"), mapeie para a opção válida mais próxima (ex: "clay").
+
+    ESTADO ATUAL DOS DADOS:
+    {json.dumps(current_data)}
+
+    SAÍDA OBRIGATÓRIA (JSON PURO):
+    Retorne APENAS um JSON com duas chaves:
+    "updated_data": {{objeto com os campos atualizados}},
+    "response_text": "Sua resposta simpática para o usuário aqui."
+    """
+
+    completion = client.chat.completions.create(
+        model="llama3-70b-8192",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input}
+        ],
+        temperature=0,
+        response_format={"type": "json_object"} # Força sair JSON
+    )
+    
+    return json.loads(completion.choices[0].message.content)
+
+# --- 4. INTERFACE DO CHAT ---
+st.title("🤖 AgroBot: Chat com Rede Neural")
+
+# Mostrar histórico
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Capturar entrada do usuário
+if prompt := st.chat_input("Ex: Tenho 6 hectares de solo argiloso..."):
+    # 1. Mostrar mensagem do usuário
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # 2. Processar com a LLM
+    if client:
+        with st.spinner("Analisando..."):
+            ai_result = get_llm_response(prompt, st.session_state.extracted_data)
             
-            # --- SOLO ---
-            soil_options = df_raw['Soil Types'].unique().tolist()
-            soil_type = st.selectbox("Tipo de Solo", soil_options)
-            
-            # --- VARIEDADE ---
-            variety_options = df_raw['Variety'].unique().tolist()
-            variety = st.selectbox("Variedade do Arroz", variety_options)
+            # Atualiza os dados extraídos
+            st.session_state.extracted_data = ai_result["updated_data"]
+            bot_text = ai_result["response_text"]
 
-        with c2:
-            # --- SEMENTES ---
-            min_seed = int(df_raw['Seedrate(in Kg)'].min())
-            max_seed = int(df_raw['Seedrate(in Kg)'].max())
-            mean_seed = int(df_raw['Seedrate(in Kg)'].mean())
-
-            seedrate = st.number_input(
-                f"Taxa de Sementes (Kg) [{min_seed}-{max_seed}]", 
-                min_value=min_seed, 
-                max_value=max_seed, 
-                value=mean_seed
-            )
-            
-            st.markdown("**Fertilizantes (Kg)**")
-            
-            # --- DAP ---
-            min_dap = int(df_raw['DAP_20days'].min())
-            max_dap = int(df_raw['DAP_20days'].max())
-            mean_dap = int(df_raw['DAP_20days'].mean())
-
-            dap = st.number_input(
-                f"DAP (20 dias) [{min_dap}-{max_dap}]", 
-                min_value=min_dap, 
-                max_value=max_dap, 
-                value=mean_dap
-            )
-            
-            # --- UREIA (Float) ---
-            min_urea = float(df_raw['Urea_40Days'].min())
-            max_urea = float(df_raw['Urea_40Days'].max())
-            mean_urea = float(df_raw['Urea_40Days'].mean())
-
-            urea = st.number_input(
-                f"Ureia (40 dias) [{min_urea:.1f}-{max_urea:.1f}]", 
-                min_value=min_urea, 
-                max_value=max_urea, 
-                value=mean_urea,
-                step=0.1
-            )
-
-        submitted = st.form_submit_button("🌱 Calcular Previsão da Safra")
-
-    # --- LÓGICA DE PREVISÃO ---
-    if submitted:
-        input_data = get_default_input(df_raw)
-        
-        # Substitui pelos valores do usuário
-        input_data['Hectares'] = hectares
-        input_data['Soil Types'] = soil_type
-        input_data['Variety'] = variety
-        input_data['Seedrate(in Kg)'] = seedrate
-        input_data['DAP_20days'] = dap
-        input_data['Urea_40Days'] = urea
-        
-        try:
-            X_final = preprocessor.transform(input_data)
-            
-            if hasattr(X_final, "toarray"):
-                X_final = X_final.toarray()
-
-            prediction = model.predict(X_final)
-            predicted_yield = prediction[0][0]
-
-            st.success("✅ Processamento Concluído!")
-            st.markdown(f"### 🌾 Previsão de Colheita: **{predicted_yield:,.2f} Kg**")
-            
-            with st.expander("🔍 Ver input técnico"):
-                st.dataframe(input_data)
+            # 3. Verificar se temos tudo para rodar a Rede Neural
+            # Critério: Precisamos pelo menos de Hectares, Solo e Variedade.
+            # O resto podemos usar a média se estiver None.
+            data = st.session_state.extracted_data
+            if data["Hectares"] and data["Soil Types"] and data["Variety"]:
                 
-        except Exception as e:
-            st.error(f"Erro na previsão: {e}")
+                # Prepara os dados para a Rede Neural
+                # Cria um dicionário base com as médias globais
+                final_input = global_defaults.copy()
+                
+                # Sobrescreve com o que a LLM extraiu
+                for k, v in data.items():
+                    if v is not None:
+                        final_input[k] = v
+                
+                # Transforma em DataFrame de 1 linha
+                input_df = pd.DataFrame([final_input])
+                
+                try:
+                    # Roda a Rede Neural (Backend)
+                    X_final = preprocessor.transform(input_df)
+                    prediction = model.predict(X_final)[0][0]
+                    
+                    bot_text += f"\n\n🎉 **PREVISÃO PRONTA!**\nCom base no que conversamos e na análise da minha Rede Neural, sua colheita estimada é de: **{prediction:,.2f} Kg**."
+                    
+                    # Opcional: mostrar os dados usados
+                    with st.expander("Ver dados técnicos"):
+                        st.write(data)
+                        
+                except Exception as e:
+                    bot_text += f"\n(Tentei calcular, mas houve um erro técnico: {e})"
 
-else:
-    st.warning("⚠️ Aguardando carregamento...")
-
-
-
+            # 4. Mostrar resposta do Bot
+            st.session_state.messages.append({"role": "assistant", "content": bot_text})
+            with st.chat_message("assistant"):
+                st.markdown(bot_text)
