@@ -66,7 +66,7 @@ if df_raw is not None and model is not None:
         st.caption("Sistema de previsão de colheita com travas de segurança.")
 
     st.markdown("---")
-    st.info("💡 **Dica:** Os campos numéricos agora têm limites baseados no histórico da nossa base de dados para garantir uma previsão mais realista.")
+    st.info("💡 **Dica:** Os limites dos campos numéricos são baseados no histórico da nossa base de dados para garantir uma previsão mais realista.")
 
     # Função Auxiliar: Preencher com Médias
     def get_default_input(df):
@@ -182,3 +182,4 @@ if df_raw is not None and model is not None:
 
 else:
     st.warning("⚠️ Aguardando carregamento...")
+
