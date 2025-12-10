@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
+import joblib as joblib
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 
@@ -138,4 +138,5 @@ if submitted:
             st.error(f"Erro durante a previsão: {e}")
             st.write("Verifique se as colunas do CSV de treino são idênticas ao CSV atual.")
     else:
+
         st.error("Modelo não carregado. Verifique os arquivos na pasta.")
