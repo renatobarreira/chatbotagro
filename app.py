@@ -6,7 +6,7 @@ from tensorflow.keras.models import load_model
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 import os
-
+#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
 # Configuração da Página
 st.set_page_config(page_title="AgroBot - Previsão de Safra", page_icon="🌾", layout="centered")
 
@@ -182,5 +182,6 @@ if df_raw is not None and model is not None:
 
 else:
     st.warning("⚠️ Aguardando carregamento...")
+
 
 
