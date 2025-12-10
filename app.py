@@ -69,12 +69,13 @@ if "extracted_data" not in st.session_state:
 # --- 3. CONFIGURAÇÃO DA LLM (CÉREBRO CONVERSACIONAL) ---
 # ⚠️ COLOQUE SUA API KEY AQUI OU NOS SECRETS DO STREAMLIT
 # Se for rodar local, troque pelo string direto: api_key = "gsk_..."
-api_key = st.secrets["GROQ_API_KEY"] if "GROQ_API_KEY" in st.secrets else "SUA_CHAVE_GROQ_AQUI_SE_RODAR_LOCAL"
+# COLE SUA CHAVE DENTRO DAS ASPAS ABAIXO (começa com gsk_...)
+api_key = "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" 
 
 try:
     client = Groq(api_key=api_key)
-except:
-    st.warning("⚠️ API Key da Groq não configurada. O chat não funcionará.")
+except Exception as e:
+    st.error(f"Erro ao iniciar cliente Groq: {e}")
     client = None
 
 def get_llm_response(user_input, current_data):
@@ -180,3 +181,4 @@ if prompt := st.chat_input("Ex: Tenho 6 hectares de solo argiloso..."):
             st.session_state.messages.append({"role": "assistant", "content": bot_text})
             with st.chat_message("assistant"):
                 st.markdown(bot_text)
+
