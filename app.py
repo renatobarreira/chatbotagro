@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib as joblib
+import joblib
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 
@@ -140,3 +140,4 @@ if submitted:
     else:
 
         st.error("Modelo não carregado. Verifique os arquivos na pasta.")
+
