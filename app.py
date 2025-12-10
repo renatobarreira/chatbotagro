@@ -63,7 +63,7 @@ if df_raw is not None and model is not None:
         st.image("https://cdn-icons-png.flaticon.com/512/4205/4205906.png", width=80)
     with col_title:
         st.title("AgroBot Inteligente")
-        st.caption("Sistema de previsão de colheita com travas de segurança.")
+        st.caption("Sistema de previsão de colheita.")
 
     st.markdown("---")
     st.info("💡 **Dica:** Os limites dos campos numéricos são baseados no histórico da nossa base de dados para garantir uma previsão mais realista.")
@@ -182,4 +182,5 @@ if df_raw is not None and model is not None:
 
 else:
     st.warning("⚠️ Aguardando carregamento...")
+
 
