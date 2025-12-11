@@ -41,7 +41,7 @@ def load_resources():
         
         # Carrega o modelo NOVO
         # ATENÇÃO: Verifique se o nome do arquivo no GitHub é este mesmo
-        model = load_model('modelo_paddy_compacto.h5')
+        model = load_model('modelo_paddy_compacto.h5', compile=False)
         
         valid_soils = df['Soil Types'].unique().tolist()
         valid_varieties = df['Variety'].unique().tolist()
@@ -158,4 +158,5 @@ if prompt := st.chat_input("Ex: 5 ha, argiloso, Ponmani. Usei 100kg de Ureia."):
 
             st.session_state.messages.append({"role": "assistant", "content": bot_msg})
             st.chat_message("assistant").write(bot_msg)
+
 
