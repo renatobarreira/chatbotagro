@@ -111,7 +111,7 @@ def get_llm_response(user_input, current_data):
     """
     
     completion = client.chat.completions.create(
-        model="llama3-70b-8192",
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_input}],
         response_format={"type": "json_object"}
     )
@@ -158,3 +158,4 @@ if prompt := st.chat_input("Ex: 5 ha, argiloso, Ponmani. Usei 100kg de Ureia."):
 
             st.session_state.messages.append({"role": "assistant", "content": bot_msg})
             st.chat_message("assistant").write(bot_msg)
+
