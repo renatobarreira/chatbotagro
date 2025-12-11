@@ -9,21 +9,29 @@ from groq import Groq
 import os
 import json
 
-# --- CONFIGURAÇÃO INICIAL ---
-st.set_page_config(page_title="AgroBot Pro", page_icon="🌾")
+st.set_page_config(page_title="AgroBot Compact", page_icon="🌾")
 
-# --- 1. CARREGAMENTO E PREPARAÇÃO ---
+# --- 1. CARREGAMENTO DO NOVO MODELO COMPACTO ---
 @st.cache_resource
 def load_resources():
     try:
-        # Carrega e limpa
         df = pd.read_csv('paddydataset.csv')
         df.columns = df.columns.str.strip()
         
-        # Recria o preprocessador (igual ao treino)
-        X = df.drop('Paddy yield(in Kg)', axis=1)
+        # DEFINIR AS 12 VARIÁVEIS EXATAS DO TREINO
+        features = [
+            'Hectares', 'Variety', 'Soil Types', 
+            'Seedrate(in Kg)', 'Nursery area (Cents)', 'LP_Mainfield(in Tonnes)',
+            'DAP_20days', 'Urea_40Days', 'Potassh_50Days', 'Micronutrients_70Days',
+            'Weed28D_thiobencarb', 'Pest_60Day(in ml)'
+        ]
+        
+        # Filtra o dataset para recriar o preprocessor igualzinho
+        X = df[features]
+        
+        # Recria preprocessor
         cat_cols = X.select_dtypes(include=['object']).columns
-        num_cols = X.select_dtypes(include=['int64', 'float64']).columns
+        num_cols = X.select_dtypes(include=['number']).columns
         
         preprocessor = ColumnTransformer([
             ('num', StandardScaler(), num_cols),
@@ -31,168 +39,122 @@ def load_resources():
         ])
         preprocessor.fit(X)
         
-        model = load_model('modelo_paddy.h5')
+        # Carrega o modelo NOVO
+        # ATENÇÃO: Verifique se o nome do arquivo no GitHub é este mesmo
+        model = load_model('modelo_paddy_compacto.h5')
         
-        # Listas para validação da LLM
         valid_soils = df['Soil Types'].unique().tolist()
         valid_varieties = df['Variety'].unique().tolist()
         
-        # Calcula médias globais (para o que o usuário não souber)
+        # Médias APENAS para essas 12 variáveis (caso o usuário não saiba alguma)
         defaults = {}
         for col in X.columns:
-            if col in cat_cols: 
-                defaults[col] = X[col].mode()[0]
-            else: 
-                defaults[col] = X[col].mean()
+            if col in cat_cols: defaults[col] = X[col].mode()[0]
+            else: defaults[col] = X[col].mean()
             
-        return model, preprocessor, df, valid_soils, valid_varieties, defaults
+        return model, preprocessor, valid_soils, valid_varieties, defaults
+        
     except Exception as e:
-        st.error(f"Erro técnico: {e}")
-        return None, None, None, [], [], {}
+        st.error(f"Erro ao carregar: {e}")
+        return None, None, [], [], {}
 
-model, preprocessor, df_raw, soils_list, varieties_list, global_defaults = load_resources()
+model, preprocessor, soils_list, varieties_list, defaults = load_resources()
 
-# --- 2. MEMÓRIA DA SESSÃO ---
+# --- 2. CONFIGURAÇÃO DA LLM ---
+api_key = st.secrets["GROQ_API_KEY"] if "GROQ_API_KEY" in st.secrets else "SUA_KEY_AQUI"
+try: client = Groq(api_key=api_key)
+except: client = None
+
+# Memória
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    st.session_state.messages.append({"role": "assistant", "content": "Olá! Sou o AgroBot. Para prever sua safra com precisão, preciso entender o seu plantio.\n\nPara começar: qual o **tamanho da área** (hectares), o **tipo de solo** e a **variedade** do arroz?"})
+    st.session_state.messages.append({"role": "assistant", "content": "Olá! Sou o AgroBot. Minha rede neural foi otimizada para focar no seu MANEJO.\n\nPara começar, me diga: **Hectares, Solo e Variedade**."})
 
-# Agora extraímos MAIS dados (satisfazendo a professora)
 if "extracted_data" not in st.session_state:
     st.session_state.extracted_data = {
-        # Essenciais
+        # Básico
         "Hectares": None,
         "Soil Types": None,
         "Variety": None,
-        
-        # Manejo (O que vamos tentar descobrir)
+        # Manejo (Opcionais - usaremos média se não tiver)
         "Seedrate(in Kg)": None,
-        "DAP_20days": None,      # Fertilizante 1
-        "Urea_40Days": None,     # Fertilizante 2
-        "Potassh_50Days": None,  # Fertilizante 3
-        "Pest_60Day(in ml)": None # Pesticida
+        "Nursery area (Cents)": None,
+        "LP_Mainfield(in Tonnes)": None,
+        "DAP_20days": None,
+        "Urea_40Days": None,
+        "Potassh_50Days": None,
+        "Micronutrients_70Days": None,
+        "Weed28D_thiobencarb": None,
+        "Pest_60Day(in ml)": None
     }
 
-# --- 3. CONFIGURAÇÃO DA LLM (CÉREBRO) ---
-# COLE SUA API KEY AQUI
-api_key = "gsk_..." # <--- COLE SUA CHAVE AQUI
-
-try:
-    client = Groq(api_key=api_key)
-except:
-    client = None
-
 def get_llm_response(user_input, current_data):
-    """
-    Prompt avançado que tenta preencher o máximo de colunas possível.
-    """
-    
-    # Construção dinâmica do prompt
     system_prompt = f"""
-    Você é um agrônomo digital experiente. Seu objetivo é coletar dados técnicos para uma Rede Neural de previsão de safra.
+    Você é um agrônomo digital. Colete dados para previsão de safra (Modelo Compacto).
     
-    ESTADO ATUAL DOS DADOS (JSON):
+    ESTADO ATUAL (JSON):
     {json.dumps(current_data)}
-
-    LISTAS VÁLIDAS:
-    - Solos: {soils_list}
-    - Variedades: {varieties_list}
-
-    SUA MISSÃO:
-    1. Analise a frase do usuário e extraia qualquer número relacionado a Hectares, Sementes, Ureia, DAP, Potássio ou Pesticidas.
-    2. Se o usuário falar "use a média" ou "não sei" para fertilizantes, mantenha como null (o código lidará com isso).
-    3. NÃO pergunte sobre clima (chuva, vento, temperatura). Assumiremos dados históricos para isso.
     
-    LÓGICA DE CONVERSA:
-    - Se faltar "Hectares", "Soil Types" ou "Variety": Pergunte isso primeiro.
-    - Se já tiver esses três, PERGUNTE SOBRE O MANEJO: "Você sabe me dizer quanto usou de fertilizantes (Ureia, DAP, Potássio) ou Sementes? Se não souber exato, posso usar uma estimativa padrão."
-    - Se o usuário já informou o manejo ou disse que não sabe: Encerre a coleta e avise que vai calcular.
+    LISTAS: Solos={soils_list}, Variedades={varieties_list}
 
-    SAÍDA OBRIGATÓRIA (JSON):
+    MISSÃO:
+    1. Prioridade Total: Hectares, Solo, Variedade.
+    2. Secundário (Manejo): Pergunte sobre Fertilizantes (Ureia, DAP, Potássio), Sementes ou Defensivos.
+    3. Se o usuário não souber os detalhes técnicos (Manejo), aceite e diga que usará a média padrão.
+    
+    RETORNE JSON:
     {{
-        "updated_data": {{campos atualizados}},
-        "response_text": "Sua pergunta ou confirmação aqui.",
-        "ready_to_calculate": true/false (true apenas se tivermos o básico E já tivermos perguntado sobre fertilizantes)
+        "updated_data": {{...}},
+        "response_text": "...",
+        "ready_to_calculate": true/false (true se tiver pelo menos Hectares, Solo e Variedade e já tiver tentado coletar o resto)
     }}
     """
-
+    
     completion = client.chat.completions.create(
         model="llama3-70b-8192",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input}
-        ],
-        temperature=0,
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_input}],
         response_format={"type": "json_object"}
     )
-    
     return json.loads(completion.choices[0].message.content)
 
-# --- 4. INTERFACE ---
-st.title("🤖 AgroBot Pro: Rede Neural & LLM")
+# --- 3. INTERFACE ---
+st.title("🌾 AgroBot: Modelo Otimizado")
 
-# Histórico
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for msg in st.session_state.messages:
+    st.chat_message(msg["role"]).write(msg["content"])
 
-# Input
-if prompt := st.chat_input("Ex: 5 hectares, solo argiloso, variedade Ponmani. Usei 100kg de Ureia."):
+if prompt := st.chat_input("Ex: 5 ha, argiloso, Ponmani. Usei 100kg de Ureia."):
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    st.chat_message("user").write(prompt)
 
     if client:
-        with st.spinner("Processando dados de manejo..."):
-            try:
-                ai_result = get_llm_response(prompt, st.session_state.extracted_data)
+        with st.spinner("Analisando manejo..."):
+            ai = get_llm_response(prompt, st.session_state.extracted_data)
+            st.session_state.extracted_data = ai["updated_data"]
+            
+            bot_msg = ai["response_text"]
+            
+            if ai.get("ready_to_calculate"):
+                # Monta o input final misturando Usuário + Médias
+                final_input = defaults.copy()
+                for k, v in st.session_state.extracted_data.items():
+                    if v is not None: final_input[k] = v
                 
-                # Atualiza memória
-                st.session_state.extracted_data = ai_result["updated_data"]
-                bot_text = ai_result["response_text"]
-                is_ready = ai_result.get("ready_to_calculate", False)
+                # Previsão
+                df_in = pd.DataFrame([final_input])
+                # Garante numérico
+                for col in df_in.columns:
+                    if col not in ['Agriblock', 'Variety', 'Soil Types', 'Nursery', 'Wind Direction']: # Lista segura de textos
+                        df_in[col] = pd.to_numeric(df_in[col], errors='ignore')
 
-                # Se a IA diz que está pronta para calcular
-                if is_ready:
-                    # 1. Prepara input final
-                    final_input = global_defaults.copy() # Começa com todas as médias (clima, etc)
-                    
-                    # 2. Sobrescreve com o que o usuário deu (Manejo + Básico)
-                    user_provided_keys = []
-                    for k, v in st.session_state.extracted_data.items():
-                        if v is not None:
-                            final_input[k] = v
-                            user_provided_keys.append(k)
-                    
-                    # 3. Previsão
-                    input_df = pd.DataFrame([final_input])
-                    
-                    # Hack para garantir que colunas numéricas sejam float/int
-                    for col in input_df.columns:
-                        if input_df[col].dtype == 'object': pass
-                        else: input_df[col] = pd.to_numeric(input_df[col])
+                X_final = preprocessor.transform(df_in)
+                if hasattr(X_final, "toarray"): X_final = X_final.toarray()
+                
+                pred = model.predict(X_final)[0][0]
+                
+                bot_msg += f"\n\n🎯 **PREVISÃO OTIMIZADA:**\nEstimativa: **{pred:,.2f} Kg**"
+                with st.expander("Ver variáveis do Modelo Compacto"):
+                    st.write(final_input)
 
-                    X_final = preprocessor.transform(input_df)
-                    if hasattr(X_final, "toarray"): X_final = X_final.toarray()
-                    
-                    prediction = model.predict(X_final)[0][0]
-                    
-                    bot_text += f"\n\n🚀 **PREVISÃO FINAL:**\nEstimativa de Colheita: **{prediction:,.2f} Kg**"
-                    
-                    # 4. TABELA DE TRANSPARÊNCIA (Pra Professora ver!)
-                    with st.expander("📊 Relatório de Variáveis Utilizadas"):
-                        st.write("O modelo utilizou **45 variáveis** no total. Abaixo, o detalhe do que foi personalizado:")
-                        
-                        # Mostra o que é do usuário vs o que é média
-                        report_data = {k: final_input[k] for k in st.session_state.extracted_data.keys()}
-                        st.table(pd.DataFrame(report_data, index=["Valor Usado"]).T)
-                        
-                        st.info("Nota: Variáveis climáticas (Chuva, Vento, Temp) foram preenchidas com a média histórica da região (não-controláveis).")
-
-                # Resposta final
-                st.session_state.messages.append({"role": "assistant", "content": bot_text})
-                with st.chat_message("assistant"):
-                    st.markdown(bot_text)
-                    
-            except Exception as e:
-                st.error(f"Erro na comunicação: {e}")
+            st.session_state.messages.append({"role": "assistant", "content": bot_msg})
+            st.chat_message("assistant").write(bot_msg)
